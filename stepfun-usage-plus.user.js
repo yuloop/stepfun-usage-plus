@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StepFun 用量和费用增强
 // @namespace    dsh.local/stepfun-usage-plus
-// @version      1.5.0
+// @version      1.5.1
 // @description  阶跃星辰「用量和费用」页就地接管：使用详情由脚本自己渲染（默认当前计费周期、汇总/明细切换、合计行、总Token 整数+小字 M/B、Credit 带 Credits 单位、缓存利用率），日期切换由脚本直接重取接口不再模拟点日历；Credit 账户卡内加「套餐用量/今日用量」四列汇总块与到期时间、与账户金额并排（版式按参考图 1:1）。
 // @match        https://platform.stepfun.com/*
 // @homepageURL https://github.com/yuloop/stepfun-usage-plus
@@ -40,6 +40,7 @@
   var waitT = null, waitStop = false;
   function bootCss() {
     if (document.getElementById('sfx-boot')) return;
+    document.documentElement.setAttribute('data-sfx', '1.5.1');  // 版本标记：便于确认装在浏览器里的是哪一版
     var s = document.createElement('style');
     s.id = 'sfx-boot'; s.textContent = BOOT;
     (document.head || document.documentElement).appendChild(s);
