@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         StepFun 用量和费用增强
 // @namespace    dsh.local/stepfun-usage-plus
-// @version      1.4.3
+// @version      1.5.0
 // @description  阶跃星辰「用量和费用」页就地接管：使用详情由脚本自己渲染（默认当前计费周期、汇总/明细切换、合计行、总Token 整数+小字 M/B、Credit 带 Credits 单位、缓存利用率），日期切换由脚本直接重取接口不再模拟点日历；Credit 账户卡内加「套餐用量/今日用量」四列汇总块与到期时间、与账户金额并排（版式按参考图 1:1）。
 // @match        https://platform.stepfun.com/*
-// @homepageURL  https://github.com/yuloop/stepfun-usage-plus
-// @supportURL   https://github.com/yuloop/stepfun-usage-plus/issues
-// @updateURL    https://raw.githubusercontent.com/yuloop/stepfun-usage-plus/main/stepfun-usage-plus.user.js
-// @downloadURL  https://raw.githubusercontent.com/yuloop/stepfun-usage-plus/main/stepfun-usage-plus.user.js
-// @run-at       document-idle
+// @homepageURL https://github.com/yuloop/stepfun-usage-plus
+// @supportURL  https://github.com/yuloop/stepfun-usage-plus/issues
+// @updateURL   https://github.com/yuloop/stepfun-usage-plus/raw/main/stepfun-usage-plus.user.js
+// @downloadURL https://github.com/yuloop/stepfun-usage-plus/raw/main/stepfun-usage-plus.user.js
+// @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
@@ -33,6 +33,28 @@
   function ymdOf(s) { if (!num(s)) return '--'; var d = new Date(num(s) * 1000); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function ymdhmsOf(s) { if (!num(s)) return '--'; var d = new Date(num(s) * 1000); return ymdOf(s) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
   function slotMin(v) { var n = num(v); var d = new Date(n > 1e12 ? n : n * 1000); return (d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':00'; }
+
+  // 首屏防闪：路由一进来就先把站点原生的套餐卡/使用详情藏住（visibility 保占位），脚本渲染好再放开
+  var BOOT = 'html.sfx-wait [class*="planUsageCard"]:not(#sfx-credit-clone [class*="planUsageCard"]),'
+    + 'html.sfx-wait [class*="usageDetailSection"]{visibility:hidden!important}';
+  var waitT = null, waitStop = false;
+  function bootCss() {
+    if (document.getElementById('sfx-boot')) return;
+    var s = document.createElement('style');
+    s.id = 'sfx-boot'; s.textContent = BOOT;
+    (document.head || document.documentElement).appendChild(s);
+  }
+  function onUsagePage() { return location.pathname.indexOf('/account-overview') === 0 || !!q('[class*="usageDetailSection"]'); }
+  function wait(on) {
+    var h = document.documentElement;
+    if (!on) { h.classList.remove('sfx-wait'); if (waitT) { clearTimeout(waitT); waitT = null; } return; }
+    if (waitStop || waitT) return;
+    h.classList.add('sfx-wait');
+    // 8s 兜底：怎么都渲染不出来就别一直白屏
+    waitT = setTimeout(function () { waitT = null; waitStop = true; wait(false); }, 8000);
+    // 首屏补几枪：这条路由是 SPA 客户端渲染，卡片出现的时机不确定
+    [80, 200, 400, 700].forEach(function (t) { setTimeout(tick, t); });
+  }
 
   function apiHeaders() {
     var h = { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', 'Oasis-Platform': 'web', 'Oasis-appID': '10300' };
@@ -118,8 +140,8 @@
         var cy = st.rec.cycle || [], td = st.rec.today || [];
         st.agg = { plan: aggregate(cy), today: aggregate(td) };
         st.at = Date.now(); st.busy = false;
-        renderBlock(); renderTable();
-      }).catch(function (e) { st.busy = false; console.warn('[SFX] 取数失败：', e && e.message); });
+        renderBlock(); renderTable(); wait(false);
+      }).catch(function (e) { st.busy = false; wait(false); console.warn('[SFX] 取数失败：', e && e.message); });
   }
 
   /* ---------- Credit 账户里的汇总块（版式按参考图） ---------- */
@@ -150,7 +172,7 @@
   function injectStyles() {
     var s = document.getElementById('sfx-style');
     if (s && s.dataset.sfxCss === CSS) return;
-    if (!s) { s = document.createElement('style'); s.id = 'sfx-style'; document.head.appendChild(s); }
+    if (!s) { s = document.createElement('style'); s.id = 'sfx-style'; (document.head || document.documentElement).appendChild(s); }
     s.textContent = CSS; s.dataset.sfxCss = CSS;
   }
   function cellHtml(big, label) { return '<div class="sfx-cell"><div class="sfx-big">' + esc(big) + '<span class="sfx-unit">Tokens</span></div><div class="sfx-sub">' + esc(label) + '</div></div>'; }
@@ -265,11 +287,13 @@
     var head = '<thead><tr><th class="sfx-l">调用时间</th><th class="sfx-l">模型</th><th>调用次数</th><th>输入Token数</th><th>输出Token数</th><th>缓存Token数</th>'
       + '<th title="' + (INCL_CACHE ? '总Token数 = 输入 + 输出 + 缓存读' : '总Token数 = 输入 + 输出') + '">总Token数</th>'
       + '<th>Credit用量</th><th title="' + (INCL_CACHE ? '缓存利用率 = 缓存 ÷ (输入 + 缓存)' : '缓存利用率 = 缓存 ÷ 输入') + '">缓存利用率</th></tr></thead>';
-    var body = rows.map(function (r) { return fmtRow(r, span); }).join('');
+    var has = rows.length > 0;
+    var body = has ? rows.map(function (r) { return fmtRow(r, span); }).join('')
+      : '<tr><td colspan="9" style="color:#86909c">正在取数…</td></tr>';
     var sumRow = '<tr class="sfx-sum"><td class="sfx-l">合计</td><td class="sfx-l">' + (mode === 'sum' ? rows.length + ' 个模型' : '共 ' + rows.length + ' 条') + '</td><td>' + fmtInt(agg.calls) + '</td><td>' + fmtInt(agg.tin) + '</td>'
       + '<td>' + fmtInt(agg.tout) + '</td><td>' + fmtInt(agg.cache) + '</td><td>' + fmtInt(agg.total) + '<span class="sfx-u">' + fmtMB(agg.total) + '</span></td>'
       + '<td>' + fmtM(agg.credit) + '<span class="sfx-u">Credits</span></td><td>' + fmtRate(agg.rate) + '</td></tr>';
-    return '<div class="sfx-scroll"><table class="sfx-table">' + head + '<tbody>' + sumRow + body + '</tbody></table></div>';
+    return '<div class="sfx-scroll"><table class="sfx-table">' + head + '<tbody>' + (has ? sumRow : '') + body + '</tbody></table></div>';
   }
   // 等空闲再重取：连续改动（先改开始日、再改结束日）不会被 st.busy 守卫吞掉
   function reload(kind) {
@@ -339,18 +363,24 @@
 
   function tick() {
     try {
-      if (!q('[class*="demandRegisterPage"]')) return;
+      bootCss();
+      if (!onUsagePage()) { wait(false); return; }
+      if (!st.at) wait(true);  // 有数据时同步渲染，不需要遮罩
+      if (!q('[class*="demandRegisterPage"]') && !q('[class*="usageDetailSection"]')) return;  // 站点还没渲染出这块，等下一次
       applyLayout(); renderBlock(); renderTable(); loadData(false);
-    } catch (e) { console.warn('[SFX] 注入异常：', e && e.message); }
+      if (st.at) wait(false);
+    } catch (e) { wait(false); console.warn('[SFX] 注入异常：', e && e.message); }
   }
   // SPA 站内跳转不会重新注入脚本：接管 pushState/replaceState/popstate，路由变了就补一次 tick
   var lastKey = location.pathname + location.search, routeTimer = null;
   function onRoute() {
     var k = location.pathname + location.search;
     if (k === lastKey) return;
-    lastKey = k;
+    lastKey = k; waitStop = false;
+    if (location.pathname.indexOf('/account-overview') !== 0) wait(false);
+    else wait(true);  // 站内跳进来：先遮住原生块，等脚本渲染
     if (routeTimer) clearTimeout(routeTimer);
-    routeTimer = setTimeout(function () { routeTimer = null; tick(); }, 600);
+    routeTimer = setTimeout(function () { routeTimer = null; tick(); }, 200);
   }
   ['pushState', 'replaceState'].forEach(function (k) {
     var orig = history[k];
@@ -362,7 +392,7 @@
   var timer = null;
   new MutationObserver(function () {
     if (timer) return;
-    timer = setTimeout(function () { timer = null; tick(); }, 800);
+    timer = setTimeout(function () { timer = null; tick(); }, 200);
   }).observe(document.documentElement, { childList: true, subtree: true });
   // 兜底轮询：在本页但首屏还没出数据时每 2 秒补一次（渲染都有签名/标记守卫，重复调用不改 DOM）
   setInterval(function () { if (location.pathname.indexOf('/account-overview') === 0) tick(); }, 2000);
