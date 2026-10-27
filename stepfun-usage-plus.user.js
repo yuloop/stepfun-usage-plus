@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         StepFun 用量和费用增强
 // @namespace    dsh.local/stepfun-usage-plus
-// @version      1.4.2
+// @version      1.4.3
 // @description  阶跃星辰「用量和费用」页就地接管：使用详情由脚本自己渲染（默认当前计费周期、汇总/明细切换、合计行、总Token 整数+小字 M/B、Credit 带 Credits 单位、缓存利用率），日期切换由脚本直接重取接口不再模拟点日历；Credit 账户卡内加「套餐用量/今日用量」四列汇总块与到期时间、与账户金额并排（版式按参考图 1:1）。
-// @match        https://platform.stepfun.com/account-overview*
+// @match        https://platform.stepfun.com/*
 // @homepageURL  https://github.com/yuloop/stepfun-usage-plus
 // @supportURL   https://github.com/yuloop/stepfun-usage-plus/issues
 // @updateURL    https://raw.githubusercontent.com/yuloop/stepfun-usage-plus/main/stepfun-usage-plus.user.js
@@ -17,7 +17,7 @@
   var API = 'https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/';
   var TTL = 5 * 60 * 1000, GREY = '#86909c';
   var INCL_CACHE = true;  // 总Token=输入+输出+缓存读、缓存利用率=缓存÷(输入+缓存)；false=站点口径
-  var st = { plan: null, credit: null, agg: null, rec: {}, at: 0, busy: false, range: 'cycle', mode: 'sum', custom: null };
+  var st = { plan: null, credit: null, agg: null, rec: {}, at: 0, busy: false, busyAt: 0, range: 'cycle', mode: 'sum', custom: null };
 
   function q(s, r) { return (r || document).querySelector(s); }
   function qa(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
@@ -43,7 +43,9 @@
     return h;
   }
   function post(name, body) {
+    var ctl = window.AbortController ? new AbortController() : null;
     var opt = { method: 'POST', credentials: 'include', headers: apiHeaders(), body: JSON.stringify(body || {}) };
+    if (ctl) { opt.signal = ctl.signal; setTimeout(function () { ctl.abort(); }, 15000); }
     return fetch(API + name, opt).then(function (r) {
       return r.text().then(function (t) { if (!r.ok) throw new Error(name + ' HTTP ' + r.status + ' ' + t.slice(0, 160)); return JSON.parse(t); });
     });
@@ -102,9 +104,9 @@
     return fetchUsage(w.start, Math.min(w.end, Date.now())).catch(function () { return []; });
   }
   function loadData(force) {
-    if (st.busy) return Promise.resolve();
+    if (st.busy && Date.now() - st.busyAt < 20000) return Promise.resolve();  // 20s 看门狗：悬挂的请求不许把 busy 卡死
     if (!force && st.agg && Date.now() - st.at < TTL) return Promise.resolve();
-    st.busy = true;
+    st.busy = true; st.busyAt = Date.now();
     return Promise.all([post('GetStepPlanStatus', {}).catch(function () { return null; }), post('QueryStepPlanRateLimit', {}).catch(function () { return null; })])
       .then(function (meta) {
         st.plan = meta[0]; st.credit = meta[1];
@@ -341,11 +343,28 @@
       applyLayout(); renderBlock(); renderTable(); loadData(false);
     } catch (e) { console.warn('[SFX] 注入异常：', e && e.message); }
   }
+  // SPA 站内跳转不会重新注入脚本：接管 pushState/replaceState/popstate，路由变了就补一次 tick
+  var lastKey = location.pathname + location.search, routeTimer = null;
+  function onRoute() {
+    var k = location.pathname + location.search;
+    if (k === lastKey) return;
+    lastKey = k;
+    if (routeTimer) clearTimeout(routeTimer);
+    routeTimer = setTimeout(function () { routeTimer = null; tick(); }, 600);
+  }
+  ['pushState', 'replaceState'].forEach(function (k) {
+    var orig = history[k];
+    if (!orig) return;
+    history[k] = function () { var r = orig.apply(this, arguments); try { onRoute(); } catch (e) {} return r; };
+  });
+  window.addEventListener('popstate', onRoute);
   tick();
   var timer = null;
   new MutationObserver(function () {
     if (timer) return;
     timer = setTimeout(function () { timer = null; tick(); }, 800);
   }).observe(document.documentElement, { childList: true, subtree: true });
+  // 兜底轮询：在本页但首屏还没出数据时每 2 秒补一次（渲染都有签名/标记守卫，重复调用不改 DOM）
+  setInterval(function () { if (location.pathname.indexOf('/account-overview') === 0) tick(); }, 2000);
   setInterval(function () { loadData(true); }, TTL);
 })();
